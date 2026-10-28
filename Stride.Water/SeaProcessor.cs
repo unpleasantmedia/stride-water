@@ -14,7 +14,7 @@ using Stride.Rendering;
 using Stride.Rendering.Materials;
 using Stride.Rendering.Materials.ComputeColors;
 using Stride.Shaders;
-using Stride.Terrain;
+using Stride.Engine.Plugins;
 using Buffer = Stride.Graphics.Buffer;
 
 namespace Stride.Water;
@@ -51,13 +51,13 @@ public sealed class SeaProcessor : EntityProcessor<SeaComponent, SeaProcessor.Bu
         // material recompiles its effect).
         public int? Set;
 
-        // Its shore map: on the GPU, what it was built from, and one being built (off the game's thread). What its floor
-        // was last seen as, and since when, so it is built again only once its floor has stood a moment.
+        // Its shore map: on the GPU, what it was built from, and one being built (off the game's thread). What the ground
+        // was last seen as, and since when, so it is built again only once it has stood a moment.
         public Texture? Shore;
-        public (object? Floor, object? Data, int Version, float Level, float Detail) ShoreFrom;
+        public (Vector4? Ground, object? Data, int Version, float Level, float Detail) ShoreFrom;
         public Task<(SeaShoreMap Map, float Width)>? ShoreBuilding;
-        public (object? Floor, object? Data, int Version, float Level, float Detail) ShoreBuildingFrom;
-        public (object? Floor, object? Data, int Version, float Level, float Detail)? ShoreSeen;
+        public (Vector4? Ground, object? Data, int Version, float Level, float Detail) ShoreBuildingFrom;
+        public (Vector4? Ground, object? Data, int Version, float Level, float Detail)? ShoreSeen;
         public double ShoreSeenSince;
     }
 
@@ -108,26 +108,20 @@ public sealed class SeaProcessor : EntityProcessor<SeaComponent, SeaProcessor.Bu
         }
     }
 
-    /// <summary>The scene's first terrain, for a sea given no floor.</summary>
-    private TerrainComponent? FirstTerrain()
-    {
-        foreach (var entity in EntityManager)
-        {
-            if (entity.Get<TerrainComponent>() is { } terrain)
-                return terrain;
-        }
-        return null;
-    }
-
     /// <summary>
-    /// Keeps its shore map to its floor: built again (off the game's thread) once its floor, level or detail has stood
-    /// changed for a second, and put on its material once built. None without a floor.
+    /// Keeps its shore map to the ground under it (a terrain, through the plugin API: none without the terrain plugin,
+    /// or a terrain in its scene): built again (off the game's thread) once the ground, its level or its detail has
+    /// stood changed for a second, and put on its material once built.
     /// </summary>
     private void Shore(SeaComponent sea, Built data, GraphicsDevice device, double now)
     {
         var level = sea.Entity.Transform.WorldMatrix.TranslationVector.Y;
-        var floor = sea.Floor ?? FirstTerrain();
-        var from = ((object?)floor, (object?)floor?.Data, floor?.Version ?? 0, level, sea.ShoreDetail);
+        var scene = EntityManager;
+        PluginApi.TryGet<Func<EntityManager, Vector4?>>("Terrain.Bounds", out var boundsOf);
+        PluginApi.TryGet<Func<EntityManager, int>>("Terrain.Version", out var versionOf);
+        PluginApi.TryGet<Func<EntityManager, Vector3, float>>("Terrain.HeightAt", out var heightAt);
+        var bounds = boundsOf != null && heightAt != null ? boundsOf(scene) : null;
+        var from = (bounds, (object?)null, versionOf?.Invoke(scene) ?? 0, level, sea.ShoreDetail);
 
         if (data.ShoreBuilding is { IsCompleted: true } built)
         {
@@ -151,14 +145,14 @@ public sealed class SeaProcessor : EntityProcessor<SeaComponent, SeaProcessor.Bu
             }
             else
             {
-                Log.Error("The sea's shore could not be read from its floor.", built.Exception?.GetBaseException());
+                Log.Error("The sea's shore could not be read from the ground under it.", built.Exception?.GetBaseException());
                 data.ShoreFrom = data.ShoreBuildingFrom;
             }
         }
 
-        if (floor?.Data is not { } ground || ground.Locations.Count == 0)
+        if (bounds is not { } reach)
         {
-            if (data.Shore != null || data.ShoreFrom.Floor != null)
+            if (data.Shore != null || data.ShoreFrom.Ground != null)
             {
                 foreach (var pass in data.Material!.Passes)
                     pass.Parameters.Set(SeaMapsKeys.HasShore, 0f);
@@ -172,7 +166,7 @@ public sealed class SeaProcessor : EntityProcessor<SeaComponent, SeaProcessor.Bu
         {
             (data.ShoreSeen, data.ShoreSeenSince) = (from, now);
             // Built at once the first time; after a change, once it has stood a second.
-            if (data.ShoreFrom.Floor != null)
+            if (data.ShoreFrom.Ground != null)
                 return;
         }
         else if (now - data.ShoreSeenSince < 1.0)
@@ -180,16 +174,13 @@ public sealed class SeaProcessor : EntityProcessor<SeaComponent, SeaProcessor.Bu
             return;
         }
 
-        // Over its floor's regions, and its surf's reach past them, as a square.
-        var width = ground.RegionWidth;
-        var origin = floor.Origin;
-        var (minX, minZ, maxX, maxZ) = (ground.Locations.Min(l => l.X), ground.Locations.Min(l => l.Z), ground.Locations.Max(l => l.X) + 1, ground.Locations.Max(l => l.Z) + 1);
+        // Over the ground, and its surf's reach past it, as a square.
         var margin = 64f;
-        var (x0, z0) = (origin.X + minX * width - margin, origin.Z + minZ * width - margin);
-        var across = MathF.Max(maxX - minX, maxZ - minZ) * width + 2f * margin;
+        var (x0, z0) = (reach.X - margin, reach.Y - margin);
+        var across = MathF.Max(reach.Z - reach.X, reach.W - reach.Y) + 2f * margin;
         var size = Math.Clamp((int)MathF.Ceiling(across / MathF.Max(sea.ShoreDetail, 0.5f)), 16, 2048);
         data.ShoreBuildingFrom = from;
-        data.ShoreBuilding = Task.Run(() => (SeaShoreMap.Build(size, x0, z0, across, level, (x, z) => floor.HeightAt(new Vector3(x, 0f, z))), across));
+        data.ShoreBuilding = Task.Run(() => (SeaShoreMap.Build(size, x0, z0, across, level, (x, z) => heightAt!(scene, new Vector3(x, 0f, z))), across));
     }
 
     private Vector3? Camera()
@@ -279,7 +270,6 @@ public sealed class SeaProcessor : EntityProcessor<SeaComponent, SeaProcessor.Bu
         hash.Add(sea.FoamColor);
         hash.Add(sea.Clarity);
         hash.Add(sea.FoamWidth);
-        hash.Add(sea.Floor);
         hash.Add(sea.SurfDepth);
         hash.Add(sea.SurfDistance);
         hash.Add(sea.BreakerHeight);

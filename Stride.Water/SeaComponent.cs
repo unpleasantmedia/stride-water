@@ -4,14 +4,14 @@ using Stride.Core.Annotations;
 using Stride.Core.Mathematics;
 using Stride.Engine;
 using Stride.Engine.Design;
-using Stride.Terrain;
 
 namespace Stride.Water;
 
 /// <summary>
 /// A sea: water at its entity's height, out to the horizon round the camera (see <see cref="SeaProcessor"/>), moved by
 /// waves from its wind, see-through and pale where it is shallow, deep and opaque further out, foaming at the shore, and
-/// reflecting the sky. How deep it is comes from what is drawn behind it, so it needs nothing else in the scene.
+/// reflecting the sky. How deep it is comes from what is drawn behind it, so it needs nothing else in the scene; with a
+/// terrain in its scene (the terrain plugin, through the plugin API), its waves calm and break at the terrain's shore.
 /// </summary>
 [DataContract("SeaComponent")]
 [Display("Sea", Expand = ExpandRule.Once)]
@@ -43,13 +43,6 @@ public sealed class SeaComponent : EntityComponent
     /// <summary>How much its highest crests foam, 0 (none) to 1.</summary>
     [DataMember(50), Display("Whitecaps", category: "Waves"), DataMemberRange(0, 1, 0.01, 0.1, 2), DefaultValue(0.3f)]
     public float Whitecaps { get; set; } = 0.3f;
-
-    /// <summary>
-    /// The ground under it, whose shore its breakers run in to, and where its waves calm (none: the scene's first
-    /// terrain, if it has one). Read again a second after it is sculpted.
-    /// </summary>
-    [DataMember(60), Display("Floor", category: "Surf")]
-    public TerrainComponent? Floor { get; set; }
 
     /// <summary>How deep the water is where its waves start to break, in metres: its surf is the water shallower than this.</summary>
     [DataMember(70), Display("Surf depth", category: "Surf"), DataMemberRange(0.1, 50, 0.1, 1, 1), DefaultValue(3f)]
