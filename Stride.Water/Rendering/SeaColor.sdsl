@@ -1,0 +1,14 @@
+// A sea's colour at a pixel (see SeaShore): shallow to deep by how much water the camera looks through, with foam where
+// it meets the shore.
+namespace Stride.Water
+{
+    shader SeaColor : ComputeColor, SeaShore
+    {
+        override float4 Compute()
+        {
+            float thickness = SeaThickness();
+            float3 water = lerp(ShallowColor.rgb, DeepColor.rgb, SeaDepth(thickness));
+            return float4(lerp(water, FoamColor.rgb, SeaFoam(thickness)), 1.0f);
+        }
+    };
+}

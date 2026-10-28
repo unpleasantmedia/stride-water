@@ -1,0 +1,100 @@
+// What a sea is drawn from (see SeaProcessor): its waves and its colours; shared by its rings' vertex stage (SeaWaves),
+// its ripples (SeaRipples) and its shore (SeaShore). Nothing here reads the scene's depth, so the editor's own passes
+// (picking, selection) can draw it.
+namespace Stride.Water
+{
+    shader SeaMaps : Global, Transformation, PositionStream4, Texturing
+    {
+        // Where its shore is (see SeaShoreMap): how far to land, how deep the still water is, and which way the shore is.
+        rgroup PerMaterial
+        {
+            stage Texture2D ShoreMap;
+        }
+
+        cbuffer PerMaterial
+        {
+            // Where its shore map lies (its corner along x and z, and how wide it is, in metres), and whether it has one.
+            stage float2 ShoreOrigin;
+            stage float ShoreWidth = 1.0f;
+            stage float HasShore = 0.0f;
+
+            // Its breakers: their wave number, how fast they move (radians a second), how high they get, and how deep
+            // the water is where they start (its surf).
+            stage float4 Breaker;
+            // How far from the shore, at most, its breakers are, in metres.
+            stage float SurfDistance = 60.0f;
+
+            // Its Gerstner waves, moving its surface: their direction (x, z), wave number (2 pi over their length) and
+            // height; and how fast each moves (radians a second), how steep its crest is (0 to 1), and where it starts. And its ripples,
+            // too small for its cells, only turning its surface at each pixel: their direction, wave number and height.
+            stage float4 Waves[12];
+            stage float4 WaveMotion[12];
+            stage float4 Ripples[16];
+            // How high its waves together can reach, for its crests' foam, and how much its crests foam (0 to 1).
+            stage float WaveReach = 1.0f;
+            stage float Whitecaps = 0.5f;
+
+            // How many of its own cells each ring reaches out from its middle; where the camera is, for the rings' morphing.
+            stage float SeaCells = 64.0f;
+            stage float3 SeaCamera;
+
+            // Its still water's height, in the world (its entity's): where its shore is.
+            stage float SeaLevel;
+
+            // Its colours: in shallow water, in deep, and its foam; how many metres of water it takes to be all deep, and
+            // how far from the shore its foam reaches.
+            stage float4 ShallowColor;
+            stage float4 DeepColor;
+            stage float4 FoamColor;
+            stage float Clarity = 8.0f;
+            stage float FoamWidth = 1.5f;
+        }
+
+        // Its shore at a place: how far to land, how deep, and which way the shore is (x, z). Far and deep without one.
+        float4 ShoreAt(float2 at)
+        {
+            float2 uv = (at - ShoreOrigin) / ShoreWidth;
+            if (HasShore < 0.5f || any(uv < 0.0f) || any(uv > 1.0f))
+                return float4(1e6f, 1000.0f, 0.0f, 0.0f);
+            return ShoreMap.SampleLevel(LinearSampler, uv, 0);
+        }
+
+        // How much of its wind waves' detail (whitecaps, ripples) shows in water this deep (still, in metres): none at
+        // the shore, all of it from twice its surf's depth (or 3 m without a surf) out.
+        float WindAt(float depth)
+        {
+            return smoothstep(0.1f, max(Breaker.w, 1.5f) * 2.0f, depth);
+        }
+
+        // How far into its surf a place is: 0 where the water is as deep as its surf starts or deeper, 1 at the shore.
+        float SurfOf(float4 shore)
+        {
+            return saturate(1.0f - shore.y / max(Breaker.w, 0.01f));
+        }
+
+        // Its breakers at a place: rolling in from its surf's edge towards the shore, their crests along the shore, rising
+        // as the water shoals and falling as it runs out, their fronts steepening towards it. How high (its amplitude)
+        // and how steep (its Gerstner steepness), and where in its roll it is (its phase).
+        float3 BreakerAt(float4 shore)
+        {
+            float surf = SurfOf(shore);
+            float height = Breaker.z * 0.5f * smoothstep(0.0f, 0.5f, surf) * smoothstep(0.0f, Breaker.z * 1.3f, shore.y)
+                // Fading in over the outer third of its reach from the shore.
+                * (1.0f - smoothstep(SurfDistance * 0.67f, SurfDistance, shore.x));
+            float steep = 0.35f + 0.55f * surf;
+            float phase = -(Breaker.x * shore.x + Breaker.y * Time);
+            return float3(height, steep, phase);
+        }
+
+        // How high on its waves a place is (0 a trough, 1 as high as they reach), for whitecaps: their heights summed
+        // there (without their sideways pull, which only shifts the crests a little).
+        float SeaCrestAt(float2 at)
+        {
+            float height = 0;
+            [unroll]
+            for (int i = 0; i < 12; i++)
+                height += Waves[i].w * sin(Waves[i].z * dot(Waves[i].xy, at) - WaveMotion[i].x * Time + WaveMotion[i].z);
+            return saturate(0.5f + 0.5f * height / max(WaveReach, 1e-3f));
+        }
+    };
+}

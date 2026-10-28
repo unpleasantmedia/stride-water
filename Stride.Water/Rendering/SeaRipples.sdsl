@@ -1,0 +1,43 @@
+// A sea's surface at a pixel turned by its ripples (see SeaMaps): small waves its cells are too coarse to move, summed
+// as slopes onto its normal before it is lit, fading out with distance, where a pixel covers many of them; and that
+// normal kept facing the camera.
+namespace Stride.Water
+{
+    shader SeaRipples : IMaterialSurface, SeaMaps, NormalStream
+    {
+        override void Compute()
+        {
+            float2 at = streams.PositionWS.xz;
+            float distance = length(streams.PositionWS.xyz - Eye.xyz);
+            float2 slope = 0;
+            // Calming towards the shore (where its shore map says how deep it is).
+            float wind = WindAt(ShoreAt(at).y);
+            [unroll]
+            for (int i = 0; i < 16; i++)
+            {
+                float2 direction = Ripples[i].xy;
+                float k = Ripples[i].z;
+                // Faded out once it is under about two pixels far off.
+                float fade = saturate(2.0f - distance * k * 0.004f);
+                float phase = k * dot(direction, at) - sqrt(9.81f * k) * Time;
+                slope += direction * k * Ripples[i].w * cos(phase) * fade;
+            }
+            slope *= wind;
+            float3 normal = normalize(streams.normalWS - float3(slope.x, 0.0f, slope.y));
+
+            // Seen from low down, the back of a steep crest would reflect the ground under the horizon (black, as the
+            // sky has nothing there), and almost all of it at such an angle: turned just enough that what it reflects is
+            // the sky at the horizon, as distant water does. Its back faces' normals (turned away) are turned back too.
+            float3 view = normalize(Eye.xyz - streams.PositionWS.xyz);
+            if (dot(normal, view) < 0.0f)
+                normal = normalize(normal - view * (2.0f * dot(normal, view)));
+            float3 reflected = reflect(-view, normal);
+            if (reflected.y < 0.03f)
+            {
+                reflected = normalize(float3(reflected.x, 0.03f, reflected.z));
+                normal = normalize(view + reflected);
+            }
+            streams.normalWS = normal;
+        }
+    };
+}

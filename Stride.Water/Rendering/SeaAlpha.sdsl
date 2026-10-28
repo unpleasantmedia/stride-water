@@ -1,0 +1,15 @@
+// How opaque a sea is at a pixel (see SeaShore): see-through in shallow water, from its shallow colour's alpha, to
+// opaque in deep, and opaque where it foams; fading out at its very edge.
+namespace Stride.Water
+{
+    shader SeaAlpha : ComputeColor, SeaShore
+    {
+        override float4 Compute()
+        {
+            float thickness = SeaThickness();
+            float alpha = lerp(ShallowColor.a, 1.0f, SeaDepth(thickness));
+            alpha = max(alpha, SeaFoam(thickness)) * SeaEdge(thickness);
+            return float4(alpha, alpha, alpha, alpha);
+        }
+    };
+}

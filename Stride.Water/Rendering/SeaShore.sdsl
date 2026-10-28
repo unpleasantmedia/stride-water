@@ -1,0 +1,57 @@
+// How deep a sea's water is at a pixel, from the scene's depth behind it (bound during the transparent pass, where
+// only its colour and opacity read it: SeaColor, SeaAlpha), and how much it foams there.
+namespace Stride.Water
+{
+    shader SeaShore : SeaMaps, DepthBase, ShaderBaseStream
+    {
+        // How deep the still water is over what is behind this pixel: the sea's level less the height of the ground
+        // the camera sees through it (found from the scene's depth there), so its shore is where the ground crosses its
+        // level, wherever its waves reach. Below 0 over land, where it is not drawn.
+        float SeaThickness()
+        {
+            float2 uv = streams.ShadingPosition.xy / ViewSize;
+            float behind = ComputeDepthFromUV(uv);
+            // The pixel's own depth from its place in the view (not its position's w, which compilers differ on).
+            float here = -mul(float4(streams.PositionWS.xyz, 1.0f), View).z;
+            float3 ground = Eye.xyz + (streams.PositionWS.xyz - Eye.xyz) * (behind / max(here, 1e-3f));
+            return SeaLevel - ground.y;
+        }
+
+        // How much of it shows at its edge: fading out where it is only a film over what is behind it.
+        float SeaEdge(float thickness)
+        {
+            return saturate(thickness / 0.05f);
+        }
+
+        // How far the water is towards deep (0 shallow, 1 deep), and how much foam is at the shore, from its thickness.
+        float SeaDepth(float thickness)
+        {
+            return saturate(thickness / max(Clarity, 0.01f));
+        }
+
+        float SeaFoam(float thickness)
+        {
+            // Swash: a band of foam that runs in to the water's edge, brightest as it gets there, then drains back out
+            // to its foam width, fading as it goes. In and out every few seconds, a little out of step along the shore.
+            float2 along = streams.PositionWS.xz;
+            float drift = 0.9f * sin(along.x * 0.045f + along.y * 0.031f) + 0.6f * sin(along.y * 0.052f - along.x * 0.027f);
+            float swash = 0.5f + 0.5f * sin(Time * 1.1f + drift);
+            float reach = max(FoamWidth, 0.05f);
+            float centre = lerp(reach, 0.04f, swash);
+            float spread = reach * 0.25f + 0.05f;
+            float off = (thickness - centre) / spread;
+            float band = exp(-off * off);
+            float shoreFoam = band * lerp(0.35f, 1.0f, swash) * saturate(thickness / 0.03f);
+            // On the highest crests only, and in patches that drift and change, not along every crest.
+            float2 at = streams.PositionWS.xz;
+            float patches = saturate(0.5f + 0.9f * sin(at.x * 0.071f + at.y * 0.023f + Time * 0.21f) * sin(at.y * 0.093f - at.x * 0.031f - Time * 0.17f));
+            float caps = smoothstep(0.74f, 0.97f, SeaCrestAt(at)) * patches * Whitecaps * WindAt(thickness);
+            // White water where its breakers break: on their crests and fronts as they come into the shallows.
+            float4 at4 = ShoreAt(at);
+            float3 breaker = BreakerAt(at4);
+            float breaking = smoothstep(Breaker.z * 2.0f, Breaker.z * 0.8f, at4.y) * step(0.01f, breaker.x);
+            float white = breaking * smoothstep(0.2f, 0.9f, sin(breaker.z) + 0.35f * cos(breaker.z));
+            return saturate(max(max(shoreFoam, caps), white));
+        }
+    };
+}
